@@ -5,6 +5,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:geolocator/geolocator.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 
 void main() {
   runApp(MyApp());
@@ -30,15 +31,19 @@ class _DriverLocationPageState extends State<DriverLocationPage> {
   String driverId = '1'; // Replace with the actual driver ID
   double latitude = 0.0;
   double longitude = 0.0;
+  late StreamSubscription<Position> positionStream;
+  late StreamSubscription<AccelerometerEvent> accelerometerStream;
+  late StreamSubscription<GyroscopeEvent> gyroscopeStream;
 
   @override
   void initState() {
     super.initState();
     initializeSocket();
+    checkLocationPermission();
   }
 
   void initializeSocket() {
-    socket = IO.io('http://192.168.18.7:3000/', <String, dynamic>{
+    socket = IO.io('http://192.168.18.125:3000/', <String, dynamic>{
       'transports': ['websocket'],
     });
 
@@ -59,6 +64,32 @@ class _DriverLocationPageState extends State<DriverLocationPage> {
     });
   }
 
+  void checkLocationPermission() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      print('Location services are disabled.');
+      return;
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        print('Location permissions are denied');
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      print(
+          'Location permissions are permanently denied, we cannot request permissions.');
+      return;
+    }
+  }
+
   void toggleOnlineStatus(bool status) {
     setState(() {
       isOnline = status;
@@ -71,9 +102,6 @@ class _DriverLocationPageState extends State<DriverLocationPage> {
     }
   }
 
-  late Position _currentPosition;
-  late StreamSubscription<Position> positionStream;
-
   void startUpdatingLocation() {
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
@@ -83,19 +111,39 @@ class _DriverLocationPageState extends State<DriverLocationPage> {
     positionStream =
         Geolocator.getPositionStream(locationSettings: locationSettings)
             .listen((Position position) {
-      _currentPosition = position;
-      log(_currentPosition.toString());
-      updateLocation(_currentPosition.latitude, _currentPosition.longitude);
+      setState(() {
+        latitude = position.latitude;
+        longitude = position.longitude;
+      });
+      log(position.toString());
+      updateLocation(position.latitude, position.longitude);
+    });
+
+    accelerometerStream =
+        accelerometerEvents.listen((AccelerometerEvent event) {
+      handleSensorUpdate();
+    });
+
+    gyroscopeStream = gyroscopeEvents.listen((GyroscopeEvent event) {
+      handleSensorUpdate();
     });
   }
 
   void stopUpdatingLocation() {
     positionStream.cancel();
+    accelerometerStream.cancel();
+    gyroscopeStream.cancel();
+  }
+
+  void handleSensorUpdate() async {
+    Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high);
+    updateLocation(position.latitude, position.longitude);
   }
 
   void updateLocation(double latitude, double longitude) {
     socket.emit('updateLocation',
-        {'driverId': "1", 'latitude': latitude, 'longitude': longitude});
+        {'driverId': driverId, 'latitude': latitude, 'longitude': longitude});
   }
 
   @override
@@ -103,6 +151,8 @@ class _DriverLocationPageState extends State<DriverLocationPage> {
     super.dispose();
     socket.dispose();
     positionStream.cancel();
+    accelerometerStream.cancel();
+    gyroscopeStream.cancel();
   }
 
   @override
